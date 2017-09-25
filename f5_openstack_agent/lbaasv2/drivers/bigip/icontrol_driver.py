@@ -26,6 +26,8 @@ from eventlet import greenthread
 from time import strftime
 from time import time
 
+from requests import HTTPError
+
 from neutron.common.exceptions import InvalidConfigurationOption
 from neutron.common.exceptions import NeutronException
 from neutron.plugins.common import constants as plugin_const
@@ -290,21 +292,21 @@ OPTS = [  # XXX maybe we should make this a dictionary
 ]
 
 
-def is_connected(method):
-    # Decorator to check we are connected before provisioning.
+def is_operational(method):
+    # Decorator to check we are operational before provisioning.
     def wrapper(*args, **kwargs):
         instance = args[0]
-        if instance.connected:
+        if instance.operational:
             try:
                 return method(*args, **kwargs)
             except IOError as ioe:
                 LOG.error('IO Error detected: %s' % method.__name__)
-                instance.connect_bigips()  # what's this do?
+                LOG.error(str(ioe))
                 raise ioe
         else:
-            LOG.error('Cannot execute %s. Not connected. Connecting.'
+            LOG.error('Cannot execute %s. Not operational. Re-initializing.'
                       % method.__name__)
-            instance.connect_bigips()
+            instance._init_bigips()
     return wrapper
 
 
@@ -750,21 +752,131 @@ class iControlDriver(LBaaSBaseDriver):
             bigip.assured_tenant_snat_subnets = {}
             bigip.assured_gateway_subnets = []
 
+    @serialized('get_all_deployed_loadbalancers')
+    @is_operational
+    def get_all_deployed_loadbalancers(self, purge_orphaned_folders=False):
+        LOG.debug('getting all deployed loadbalancers on BIG-IPs')
+        deployed_lb_dict = {}
+        for bigip in self.get_all_bigips():
+            folders = self.system_helper.get_folders(bigip)
+            for folder in folders:
+                tenant_id = folder[len(self.service_adapter.prefix):]
+                if str(folder).startswith(self.service_adapter.prefix):
+                    resource = resource_helper.BigIPResourceHelper(
+                        resource_helper.ResourceType.virtual_address)
+                    deployed_lbs = resource.get_resources(bigip, folder)
+                    if deployed_lbs:
+                        for lb in deployed_lbs:
+                            lb_id = lb.name[len(self.service_adapter.prefix):]
+                            if lb_id in deployed_lb_dict:
+                                deployed_lb_dict[lb_id][
+                                    'hostnames'].append(bigip.hostname)
+                            else:
+                                deployed_lb_dict[lb_id] = {
+                                    'id': lb_id,
+                                    'tenant_id': tenant_id,
+                                    'hostnames': [bigip.hostname]
+                                }
+                    else:
+                        # delay to assure we are not in the tenant creation
+                        # process before a virtual address is created.
+                        greenthread.sleep(10)
+                        deployed_lbs = resource.get_resources(bigip, folder)
+                        if deployed_lbs:
+                            for lb in deployed_lbs:
+                                lb_id = lb.name[
+                                    len(self.service_adapter.prefix):]
+                                deployed_lb_dict[lb_id] = \
+                                    {'id': lb_id, 'tenant_id': tenant_id}
+                        else:
+                            # Orphaned folder!
+                            if purge_orphaned_folders:
+                                try:
+                                    self.system_helper.purge_folder_contents(
+                                        bigip, folder)
+                                    self.system_helper.purge_folder(
+                                        bigip, folder)
+                                    LOG.error('orphaned folder %s on %s' %
+                                              (folder, bigip.hostname))
+                                except Exception as exc:
+                                    LOG.error('error purging folder %s: %s' %
+                                              (folder, str(exc)))
+        return deployed_lb_dict
+
+    @serialized('purge_orphaned_pool')
+    @is_operational
+    def purge_orphaned_pool(self, tenant_id=None, pool_id=None, hostnames=[]):
+        for bigip in self.get_all_bigips():
+            if bigip.hostname in hostnames:
+                try:
+                    pool_name = self.service_adapter.prefix + pool_id
+                    partition = self.service_adapter.prefix + tenant_id
+                    pool = resource_helper.BigIPResourceHelper(
+                        resource_helper.ResourceType.pool).load(
+                            bigip, pool_name, partition)
+                    pool.delete()
+                except HTTPError as err:
+                    if err.response.status_code == 404:
+                        LOG.debug('pool %s not on BIG-IP %s.'
+                                  % (pool_id, bigip.hostname))
+                except Exception as exc:
+                    LOG.exception('Exception purging pool %s' % str(exc))
+
+    @serialized('purge_orphaned_loadbalancer')
+    @is_operational
+    def purge_orphaned_loadbalancer(self, tenant_id=None,
+                                    loadbalancer_id=None, hostnames=[]):
+        for bigip in self.get_all_bigips():
+            if bigip.hostname in hostnames:
+                try:
+                    va_name = self.service_adapter.prefix + loadbalancer_id
+                    partition = self.service_adapter.prefix + tenant_id
+                    va = resource_helper.BigIPResourceHelper(
+                        resource_helper.ResourceType.virtual_address).load(
+                            bigip, va_name, partition)
+                    # get virtual services (listeners)
+                    # referencing this virtual address
+                    vses = resource_helper.BigIPResourceHelper(
+                        resource_helper.ResourceType.virtual).get_resources(
+                            bigip, partition)
+                    vs_dest_compare = '/' + partition + '/' + va.name
+                    for vs in vses:
+                        if str(vs.destination).startswith(vs_dest_compare):
+                            if hasattr(vs, 'pool'):
+                                pool = resource_helper.BigIPResourceHelper(
+                                    resource_helper.ResourceType.pool).load(
+                                    bigip, os.path.basename(vs.pool),
+                                    partition)
+                                vs.delete()
+                                pool.delete()
+                            else:
+                                vs.delete()
+                    resource_helper.BigIPResourceHelper(
+                        resource_helper.ResourceType.virtual_address).delete(
+                            bigip, va_name, partition)
+                except HTTPError as err:
+                    if err.response.status_code == 404:
+                        LOG.debug('loadbalancer %s not on BIG-IP %s.'
+                                  % (loadbalancer_id, bigip.hostname))
+                except Exception as exc:
+                    LOG.exception('Exception purging loadbalancer %s'
+                                  % str(exc))
+
     @serialized('create_loadbalancer')
-    @is_connected
+    @is_operational
     def create_loadbalancer(self, loadbalancer, service):
         """Create virtual server"""
         return self._common_service_handler(service)
 
     @serialized('update_loadbalancer')
-    @is_connected
+    @is_operational
     def update_loadbalancer(self, old_loadbalancer, loadbalancer, service):
         """Update virtual server"""
         # anti-pattern three args unused.
         return self._common_service_handler(service)
 
     @serialized('delete_loadbalancer')
-    @is_connected
+    @is_operational
     def delete_loadbalancer(self, loadbalancer, service):
         """Delete loadbalancer"""
         LOG.debug("Deleting loadbalancer")
@@ -774,14 +886,14 @@ class iControlDriver(LBaaSBaseDriver):
             delete_event=True)
 
     @serialized('create_listener')
-    @is_connected
+    @is_operational
     def create_listener(self, listener, service):
         """Create virtual server"""
         LOG.debug("Creating listener")
         return self._common_service_handler(service)
 
     @serialized('update_listener')
-    @is_connected
+    @is_operational
     def update_listener(self, old_listener, listener, service):
         """Update virtual server"""
         LOG.debug("Updating listener")
@@ -789,63 +901,63 @@ class iControlDriver(LBaaSBaseDriver):
         return self._common_service_handler(service)
 
     @serialized('delete_listener')
-    @is_connected
+    @is_operational
     def delete_listener(self, listener, service):
         """Delete virtual server"""
         LOG.debug("Deleting listener")
         return self._common_service_handler(service)
 
     @serialized('create_pool')
-    @is_connected
+    @is_operational
     def create_pool(self, pool, service):
         """Create lb pool"""
         LOG.debug("Creating pool")
         return self._common_service_handler(service)
 
     @serialized('update_pool')
-    @is_connected
+    @is_operational
     def update_pool(self, old_pool, pool, service):
         """Update lb pool"""
         LOG.debug("Updating pool")
         return self._common_service_handler(service)
 
     @serialized('delete_pool')
-    @is_connected
+    @is_operational
     def delete_pool(self, pool, service):
         """Delete lb pool"""
         LOG.debug("Deleting pool")
         return self._common_service_handler(service)
 
     @serialized('create_member')
-    @is_connected
+    @is_operational
     def create_member(self, member, service):
         """Create pool member"""
         LOG.debug("Creating member")
         return self._common_service_handler(service)
 
     @serialized('update_member')
-    @is_connected
+    @is_operational
     def update_member(self, old_member, member, service):
         """Update pool member"""
         LOG.debug("Updating member")
         return self._common_service_handler(service)
 
     @serialized('delete_member')
-    @is_connected
+    @is_operational
     def delete_member(self, member, service):
         """Delete pool member"""
         LOG.debug("Deleting member")
         return self._common_service_handler(service, delete_event=True)
 
     @serialized('create_health_monitor')
-    @is_connected
+    @is_operational
     def create_health_monitor(self, health_monitor, service):
         """Create pool health monitor"""
         LOG.debug("Creating health monitor")
         return self._common_service_handler(service)
 
     @serialized('update_health_monitor')
-    @is_connected
+    @is_operational
     def update_health_monitor(self, old_health_monitor,
                               health_monitor, service):
         """Update pool health monitor"""
@@ -853,13 +965,13 @@ class iControlDriver(LBaaSBaseDriver):
         return self._common_service_handler(service)
 
     @serialized('delete_health_monitor')
-    @is_connected
+    @is_operational
     def delete_health_monitor(self, health_monitor, service):
         """Delete pool health monitor"""
         LOG.debug("Deleting health monitor")
         return self._common_service_handler(service)
 
-    @is_connected
+    @is_operational
     def get_stats(self, service):
         lb_stats = {}
         stats = ['clientside.bitsIn',
@@ -890,23 +1002,6 @@ class iControlDriver(LBaaSBaseDriver):
 
         finally:
             return lb_stats
-
-    @serialized('remove_orphans')
-    def remove_orphans(self, all_loadbalancers):
-        """Remove out-of-date configuration on big-ips """
-        existing_tenants = []
-        existing_lbs = []
-        for loadbalancer in all_loadbalancers:
-            existing_tenants.append(loadbalancer['tenant_id'])
-            existing_lbs.append(loadbalancer['lb_id'])
-
-        for bigip in self.get_all_bigips():
-            bigip.pool.purge_orphaned_pools(existing_lbs)
-        for bigip in self.get_all_bigips():
-            bigip.system.purge_orphaned_folders_contents(existing_tenants)
-
-        for bigip in self.get_all_bigips():
-            bigip.system.purge_orphaned_folders(existing_tenants)
 
     def fdb_add(self, fdb):
         # Add (L2toL3) forwarding database entries
@@ -959,7 +1054,7 @@ class iControlDriver(LBaaSBaseDriver):
         return False
 
     @serialized('sync')
-    @is_connected
+    @is_operational
     def sync(self, service):
         """Sync service defintion to device"""
         # plugin_rpc may not be set when unit testing
@@ -974,7 +1069,7 @@ class iControlDriver(LBaaSBaseDriver):
             LOG.debug("Attempted sync of deleted pool")
 
     @serialized('backup_configuration')
-    @is_connected
+    @is_operational
     def backup_configuration(self):
         # Save Configuration on Devices
         for bigip in self.get_all_bigips():
@@ -1438,7 +1533,7 @@ class iControlDriver(LBaaSBaseDriver):
         else:
             LOG.error('Loadbalancer provisioning status is invalid')
 
-    @is_connected
+    @is_operational
     def update_operating_status(self, service):
         if 'members' in service:
             if self.network_builder:
