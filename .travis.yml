@@ -62,6 +62,7 @@ deploy:
     - RELEASE_TAG="v$(echo $PKG_VERSION |cut -c1-4)"
     on:
       repo: F5Networks/f5-openstack-agent
+      all_branches: true
     script:
     - echo $RELEASE_TAG
     - ./docs/scripts/deploy-docs.sh publish-product-docs-to-prod openstack/agent/newton $RELEASE_TAG
