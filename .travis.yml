@@ -68,10 +68,10 @@ deploy:
     on:
       all_branches: true
       repo: F5Networks/f5-openstack-agent
-      branch: stable/newton
+      branch: mitaka
       condition: $TRAVIS_TAG = ""
     script:
-    - ./docs/scripts/deploy-docs.sh publish-product-docs-to-prod openstack/agent newton
+    - ./docs/scripts/deploy-docs.sh publish-product-docs-to-prod openstack/agent mitaka
   # if this is a tagged release, the docs go to /products/openstack/agent/$TRAVIS_BRANCH/vX.Y
   - provider: script
     skip_cleanup: true
@@ -79,7 +79,7 @@ deploy:
       all_branches: true
       repo: F5Networks/f5-openstack-agent
     script:
-      - ./docs/scripts/deploy-docs.sh publish-product-docs-to-prod openstack/agent/newton $RELEASE_TAG
+      - ./docs/scripts/deploy-docs.sh publish-product-docs-to-prod openstack/agent/mitaka $RELEASE_TAG
 
 notifications:
   slack:
