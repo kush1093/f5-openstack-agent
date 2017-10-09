@@ -74,9 +74,9 @@ deploy:
   - provider: script
     skip_cleanup: true
     env:
-    - RELEASE_TAG="$(echo $TRAVIS_TAG |cut -c1-4)"
+    - RELEASE_TAG="v$(echo $TRAVIS_TAG |cut -c1-4)"
     on:
-      tags: true
+      all_branches: true
       repo: F5Networks/f5-openstack-agent
     script:
     - ./docs/scripts/deploy-docs.sh publish-product-docs-to-prod openstack/agent/$TRAVIS_BRANCH $RELEASE_TAG
