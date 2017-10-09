@@ -79,6 +79,7 @@ deploy:
       all_branches: true
       repo: F5Networks/f5-openstack-agent
     script:
+    - echo $RELEASE_TAG
     - ./docs/scripts/deploy-docs.sh publish-product-docs-to-prod openstack/agent/newton $RELEASE_TAG
 
 notifications:
