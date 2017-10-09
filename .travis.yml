@@ -60,7 +60,7 @@ deploy:
       tags: true
       python: 2.7
     skip_cleanup: true
-  # deploy docs to s3
+   # deploy docs to s3
   # if this is not a tagged release, the docs go to /products/openstack/agent/$TRAVIS_BRANCH
   - provider: script
     skip_cleanup: true
@@ -79,7 +79,7 @@ deploy:
       all_branches: true
       repo: F5Networks/f5-openstack-agent
     script:
-    - ./docs/scripts/deploy-docs.sh publish-product-docs-to-prod openstack/agent/$TRAVIS_BRANCH $RELEASE_TAG
+    - ./docs/scripts/deploy-docs.sh publish-product-docs-to-prod openstack/agent/newton $RELEASE_TAG
 
 notifications:
   slack:
