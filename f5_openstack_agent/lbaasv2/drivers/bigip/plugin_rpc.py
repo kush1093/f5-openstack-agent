@@ -1,5 +1,5 @@
 """RPC API for calls back to the plugin."""
-# Copyright (c) 2016-2018, F5 Networks, Inc.
+# Copyright 2016 F5 Networks Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,23 +14,50 @@
 # limitations under the License.
 #
 
+from keystoneauth1 import identity
+from keystoneauth1 import session
+
+from neutron.extensions import portbindings
+from neutron_lib import constants as neutron_const
+
+from oslo_config import cfg
 from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
 import oslo_messaging as messaging
 
 from neutron.common import rpc
+from neutron.plugins.common import constants as plugin_constants
+from neutronclient.v2_0 import client
 
 from f5_openstack_agent.lbaasv2.drivers.bigip import constants_v2 as constants
 
 LOG = logging.getLogger(__name__)
 
+opt_group = cfg.OptGroup(name='keystone_authtoken')
+OPTS = [cfg.StrOpt('username', default='neutron',
+                        help=('username')),
+             cfg.StrOpt('password',
+                        default='changeme',
+                        help=('password')),
+             cfg.StrOpt('project_name',
+                        default='services',
+                        help=('project_name')),
+             cfg.StrOpt('project_domain_name',
+                        default='Default',
+                        help=('project_domain_name')),
+             cfg.StrOpt('user_domain_name',
+                        default='Default',
+                        help=('user_domain_name')),
+             cfg.StrOpt('auth_url',
+                        default='http://172.16.1.3:35357',
+                        help=('auth_url'))]
 
 class LBaaSv2PluginRPC(object):
     """Client interface for agent to plugin RPC."""
 
     RPC_API_NAMESPACE = None
 
-    def __init__(self, topic, context, env, group, host):
+    def __init__(self, topic, context, env, group, host, conf):
         """Initialize LBaaSv2PluginRPC."""
         super(LBaaSv2PluginRPC, self).__init__()
 
@@ -47,6 +74,7 @@ class LBaaSv2PluginRPC(object):
         self.env = env
         self.group = group
         self.host = host
+        self.rest = LbaaSv2pluginREST_CLASS(conf)
 
     def _make_msg(self, method, **kwargs):
         return {'method': method,
@@ -106,6 +134,7 @@ class LBaaSv2PluginRPC(object):
                                   lb_id,
                                   stats):
         """Update the database with loadbalancer stats."""
+        # return self.rest.update_loadbalancer_stats(lb_id, stats)
         return self._cast(
             self.context,
             self._make_msg('update_loadbalancer_stats',
@@ -148,6 +177,7 @@ class LBaaSv2PluginRPC(object):
                            listener_id=listener_id),
             topic=self.topic
         )
+        # return self.rest.listener_destroyed(listener_id)
 
     @log_helpers.log_method_call
     def update_pool_status(self,
@@ -302,7 +332,7 @@ class LBaaSv2PluginRPC(object):
     @log_helpers.log_method_call
     def get_ports_for_mac_addresses(self, mac_addresses=None):
         """Get a list of ports that correspond to the mac addrs."""
-        ports = []
+        # return self.rest.get_ports_for_mac_addresses(mac_addresses)
         try:
             ports = self._call(
                 self.context,
@@ -319,6 +349,7 @@ class LBaaSv2PluginRPC(object):
     @log_helpers.log_method_call
     def get_ports_on_network(self, network_id=None):
         """Get a list of ports on the network."""
+        # return self.rest.get_ports_on_network(network_id)
         return self._call(
             self.context,
             self._make_msg('get_ports_on_network',
@@ -329,7 +360,7 @@ class LBaaSv2PluginRPC(object):
     @log_helpers.log_method_call
     def get_port_by_name(self, port_name=None):
         """Get a list of ports that have the name port_name."""
-        ports = []
+        # return self.rest.get_port_by_name(port_name)
         try:
             ports = self._call(
                 self.context,
@@ -351,8 +382,15 @@ class LBaaSv2PluginRPC(object):
                               vnic_type="normal",
                               binding_profile={}):
         """Add a neutron port to the subnet."""
-        port = None
-        try:
+        return self.rest.create_port_on_subnet(subnet_id=subnet_id,
+                               mac_address=mac_address,
+                               name=name,
+                               fixed_address_count=fixed_address_count,
+                               host=self.host,
+                               device_id=device_id,
+                               vnic_type=vnic_type,
+                               binding_profile=binding_profile)
+        """try:
             port = self._call(
                 self.context,
                 self._make_msg('create_port_on_subnet',
@@ -370,7 +408,7 @@ class LBaaSv2PluginRPC(object):
             LOG.error("agent->plugin RPC exception caught: "
                       "create_port_on_subnet")
 
-        return port
+        return port"""
 
     @log_helpers.log_method_call
     def create_port_on_network(self, network_id=None, mac_address=None,
@@ -379,7 +417,13 @@ class LBaaSv2PluginRPC(object):
                                vnic_type="normal",
                                binding_profile={}):
         """Add a neutron port to the network."""
-        port = None
+        """return self.rest.create_port_on_network(network_id=network_id,
+                               mac_address=mac_address,
+                               name=name,
+                               host=self.host,
+                               device_id=device_id,
+                               vnic_type=vnic_type,
+                               binding_profile=binding_profile)"""
         try:
             port = self._call(
                 self.context,
@@ -402,7 +446,9 @@ class LBaaSv2PluginRPC(object):
     @log_helpers.log_method_call
     def delete_port_by_name(self, port_name=None):
         """Delete ports with the given name."""
-        try:
+        return self.rest.delete_port_by_name(port_name)
+        """try:
+	    LOG.debug("REST_CLASS:blabla")
             return self._cast(
                 self.context,
                 self._make_msg('delete_port_by_name',
@@ -411,11 +457,12 @@ class LBaaSv2PluginRPC(object):
             )
         except messaging.MessageDeliveryFailure:
             LOG.error("agent->plugin RPC exception caught: "
-                      "delet_port_by_name")
+                      "delet_port_by_name")"""
 
     @log_helpers.log_method_call
     def delete_port(self, port_id=None, mac_address=None):
         """Delete port with the given port_id."""
+        # return self.rest.delete_port(port_id, mac_address)
         return self._cast(
             self.context,
             self._make_msg('delete_port',
@@ -713,3 +760,226 @@ class LBaaSv2PluginRPC(object):
                       "validate_l7policys_state_by_listener")
 
         return l7policy_status
+
+
+class LbaaSv2pluginREST_CLASS(object):
+    def __init__(self, conf):
+	CONF = conf
+	CONF.register_group(opt_group)
+	CONF.register_opts(OPTS, opt_group)
+        self.aut = identity.Password(auth_url=
+                                     CONF.keystone_authtoken.auth_url,
+                                     username=
+                                     CONF.keystone_authtoken.username,
+                                     password=
+                                     CONF.keystone_authtoken.password,
+                                     project_name=
+                                     CONF.keystone_authtoken.project_name,
+                                     project_domain_name=
+                                     CONF.keystone_authtoken.project_domain_name,
+                                     user_domain_name=
+                                     CONF.keystone_authtoken.user_domain_name)
+        self.sess = session.Session(auth=self.aut)
+        self.neutron = client.Client(session=self.sess)
+        self.cluster_wide_agents = {}
+        LOG.debug("REST_CLASS:self.user_domain_name %(user_domain_name)s",
+                  {'user_domain_name':CONF.keystone_authtoken.user_domain_name})
+        LOG.debug("REST_CLASS:self.project_domain_name %(project_domain_name)s",
+                  {'project_domain_name':CONF.keystone_authtoken.project_domain_name})
+        LOG.debug("REST_CLASS:self.project_name %(project_name)s",
+                  {'project_name':CONF.keystone_authtoken.project_name})
+        LOG.debug("REST_CLASS:self.password %(password)s",
+                  {'password':CONF.keystone_authtoken.password})
+        LOG.debug("REST_CLASS:self.username %(username)s",
+                  {'username':CONF.keystone_authtoken.username})
+	LOG.debug("REST_CLASS:self.neutron %(neutron)s",
+                  {'neutron':self.neutron})
+        LOG.debug("REST_CLASS:self.neutron %(auth_url)s",
+                  {'auth_url':CONF.keystone_authtoken.auth_url})
+
+    def get_ports_for_mac_addresses(self, mac_addresses=None):
+        ports = []
+        try:
+            if not isinstance(mac_addresses, list):
+                mac_addresses = [mac_addresses]
+            filters = {'mac_address': mac_addresses}
+            ports = self.neutron.list_ports(
+                filters=filters
+            )
+        except Exception as e:
+            LOG.error("Exception: get_ports_for_mac_addresses: %s",
+                      e.message)
+
+        return ports
+
+    def get_ports_on_network(self, network_id=None):
+        """Get ports for network."""
+        ports = []
+        try:
+            if not isinstance(network_id, list):
+                network_ids = [network_id]
+            filters = {'network_id': network_ids}
+            ports = self.neutron.list_ports(
+                filters=filters
+            )
+	    LOG.debug("REST_CLASS:success")
+        except Exception as e:
+            LOG.error("Exception: get_ports_on_network: %s", e.message)
+    
+        return ports
+
+    def get_port_by_name(self, port_name=None): # doesn't work
+        """Get port by name."""
+        if port_name:
+            filters = {'name': [port_name]}
+            LOG.debug("REST_CLASS:port %(filters)s",
+                  {'filters':filters})
+            return self.neutron.list_ports(
+                filters=filters)
+
+    def delete_port(self, port_id=None, mac_address=None): #not sure
+        """Delete port."""
+        if port_id:
+            self.neutron.delete_port(port_id)
+        elif mac_address:
+            filters = {'mac_address': [mac_address]}
+            ports = self.neutron.list_ports(
+                filters=filters
+            )
+            for port in ports:
+                self.neutron.delete_port(
+                    port['id']
+                )
+
+    def delete_port_by_name(self, port_name=None): #used to delete lbaas-ports; doesn't work
+        """Delete port by name."""
+        if port_name:
+            filters = {'name': [port_name]}
+            try:
+                ports = self.neutron.list_ports(
+                    filters=filters
+                )
+                """for port in ports:
+                    self.neutron.delete_port( #deleted lb but not the port associated with it. "failed to delete port: string indices must be integers, not str"
+                        port['id']
+                    )"""
+	        for key,val in ports.iteritems():
+                    for v in val:
+                        if 'id' in v:
+                            self.neutron.delete_port(v['id'])
+	        """JSON RESPONSE: Error message: {"NeutronError": {"message": "Port 322b6ffa-19f6-4944-8f3d-9048129bc7fe cannot be deleted directly via the port API: has device owner network:router_gateway.", "type": "ServicePortInUse", "detail": ""}}
+                LOG ERROR: failed to delete port: Port 322b6ffa-19f6-4944-8f3d-9048129bc7fe cannot be deleted directly via the port API: has device owner network:router_gateway"""
+            except Exception as e:
+                LOG.error("failed to delete port: %s", e.message)
+
+    def create_port_on_subnet(self, subnet_id=None,
+                              mac_address=None, name=None,
+                              fixed_address_count=1, host=None,
+                              device_id=None,
+                              vnic_type=portbindings.VNIC_NORMAL,
+                              binding_profile={}):
+        """Create port on subnet."""
+        port = None
+        if subnet_id:
+            try:
+                subnet = self.neutron.show_subnet(
+                    subnet_id
+                )
+                if not mac_address:
+                    mac_address = neutron_const.ATTR_NOT_SPECIFIED
+                fixed_ip = {'subnet_id': subnet['subnet']['id']} 
+                if fixed_address_count > 1:
+                    fixed_ips = []
+                    for _ in range(0, fixed_address_count):
+                        fixed_ips.append(fixed_ip)
+                else:
+                    fixed_ips = [fixed_ip]
+                if not host:
+                    host = ''
+                if not name:
+                    name = ''
+
+                port_data = {
+                    'tenant_id': subnet['subnet']['tenant_id'],
+                    'name': name,
+                    'network_id': subnet['subnet']['network_id'],
+                    'admin_state_up': True,
+                    'device_owner': 'network:f5lbaasv2',
+                    # 'status': neutron_const.PORT_STATUS_ACTIVE,
+                    'fixed_ips': fixed_ips
+                }
+                if device_id:
+                    port_data['device_id'] = device_id
+                port_data[portbindings.HOST_ID] = host
+                port_data[portbindings.VNIC_TYPE] = vnic_type
+                port_data[portbindings.PROFILE] = binding_profile
+                port = self.neutron.create_port(
+                    {'port': port_data})
+                # Because ML2 marks ports DOWN by default on creation
+                update_data = {
+                    'status': neutron_const.PORT_STATUS_ACTIVE
+                }
+                # self.neutron.update_port(
+                #     port['port']['id'], {'port': update_data}) # Exception: create_port_on_subnet: Cannot update read-only attribute status
+		self.neutron.update_port(
+                    port['port']['id'], {'port':{'status':''}}) # Exception: create_port_on_subnet: Cannot update read-only attribute status
+            except Exception as e:
+                LOG.error("Exception: create_port_on_subnet: %s",
+                          e.message)
+
+        return port
+
+    def create_port_on_network(self, network_id=None,
+                               mac_address=None, name=None, host=None,
+                               device_id=None,
+                               vnic_type=portbindings.VNIC_NORMAL,
+                               binding_profile={}):
+        """Create a port on a network."""
+        LOG.debug("inside of create_port_on_network")
+        ports = []
+        if network_id and name:
+            filters = {'name': [name]}
+            ports = self.neutron.list_ports(
+                filters=filters
+            )
+
+        if not ports:
+            network = self.neutron.show_network(
+                network_id
+            )
+
+            if not mac_address:
+                mac_address = neutron_const.ATTR_NOT_SPECIFIED
+            if not host:
+                host = ''
+            if not name:
+                name = ''
+
+            port_data = {
+                'tenant_id': network['tenant_id'],
+                'name': name,
+                'network_id': network_id,
+                'mac_address': mac_address,
+                'admin_state_up': True,
+                'device_owner': 'network:f5lbaasv2',
+                'status': neutron_const.PORT_STATUS_ACTIVE,
+                'fixed_ips': neutron_const.ATTR_NOT_SPECIFIED
+            }
+            if device_id:
+                port_data['device_id'] = device_id
+            port_data[portbindings.HOST_ID] = host
+            port_data[portbindings.VNIC_TYPE] = vnic_type
+            port_data[portbindings.PROFILE] = binding_profile
+
+            port = self.neutron.create_port(
+                {'port': port_data})
+            # Because ML2 marks ports DOWN by default on creation
+            update_data = {
+                'status': neutron_const.PORT_STATUS_ACTIVE
+            }
+            self.neutron.update_port(
+                port['id'], {'port': update_data})
+            return port
+
+        else:
+            return ports[0]

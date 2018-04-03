@@ -361,7 +361,8 @@ class LbaasAgentManager(periodic_task.PeriodicTasks):  # b --> B
             self.context,
             self.conf.environment_prefix,
             self.conf.environment_group_number,
-            self.agent_host
+            self.agent_host,
+            self.conf
         )
 
         #
